@@ -1,343 +1,50 @@
-## Summary
+# Automate Habitica++
 
-**Automate Habitica+** is a fork of [Automate Habitica](https://github.com/bumbleshoot/automate-habitica) by [@bumbleshoot](https://github.com/bumbleshoot).
+**Automate Habitica++** is a TypeScript port of [automate-habitica](https://github.com/douglasrizzo/automate-habitica/) (a Google Apps Script project) that runs on **Cloudflare Workers** instead of GAS.
 
-This fork extends the original with additional features and improvements while maintaining full compatibility with the original functionality. All credit for the original concept and implementation goes to bumbleshoot.
+## Prerequisites
 
-It is a suite of automation tools for Habitica, allowing you to focus on your tasks instead of managing gameplay. Each tool can be enabled, disabled, and configured to suit your needs.
+- [Node.js 22 or newer](https://nodejs.org/en/download) and [Git](https://git-scm.com/downloads).
+- [Wrangler](https://developers.cloudflare.com/workers/wrangler/install-and-update/) is installed locally by `npm install`; no global installation is required.
+- A Cloudflare account. The setup command opens `wrangler login` when needed.
+- Your Habitica User ID and API token, available from Habitica's [Settings > Site Data](https://habitica.com/user/settings/siteData) page. Habitica does not expose an OAuth or API flow to obtain these credentials programmatically.
 
-## Features
+## Install and deploy
 
-### Auto cron
-
-Automatically runs [cron](https://habitica.fandom.com/wiki/Cron) shortly after your [day start time](https://habitica.fandom.com/wiki/Custom_Day_Start).
-
-### Auto Accept Quest Invites
-
-Automatically and immediately accepts [quest](https://habitica.fandom.com/wiki/Quests) invites from your [party](https://habitica.fandom.com/wiki/Party).
-
-### Force Start Quests
-
-Forces pending [quests](https://habitica.fandom.com/wiki/Quests) to start after `FORCE_START_QUESTS_AFTER_HOURS` hours, regardless of how many [party](https://habitica.fandom.com/wiki/Party) members have joined. If the script force starts the quest, and if `NOTIFY_MEMBERS_EXCLUDED_FROM_QUEST` is set to `true`, it sends a [private message](https://habitica.fandom.com/wiki/Private_Messaging) to the player with a list of party members who failed to join.
-
-> [!NOTE]
-> Only party leaders can run this automation.
-
-### Auto Invite Quests
-
-Whenever your party completes a quest, automatically selects a quest scroll from your inventory and invites your party to that quest. There is a short delay between quest ending and sending the invite, to give other party members a chance to send their own invite first if they hold a more urgent scroll — see [Quest Selection And Invite Delay](#quest-selection-and-invite-delay) below for exactly how that's calculated. If `AUTO_INVITE_HOURGLASS_QUESTS` is set to `false`, the script will not use _any_ hourglass quest scrolls, even if they match the other quest categories.
-
-You can configure which quest categories to auto-invite using these settings:
-
-- `AUTO_INVITE_GOLD_QUESTS` - Quests purchasable with gold
-- `AUTO_INVITE_UNLOCKABLE_QUESTS` - Quests unlocked by completing other quests
-- `AUTO_INVITE_PET_QUESTS` - Quests that reward pet eggs or hatching potions
-- `AUTO_INVITE_HOURGLASS_QUESTS` - Quests purchasable with hourglasses
-- `AUTO_INVITE_FULLY_COMPLETED_QUESTS` - If set to `false`, quests that have reached 100% party completion will be skipped. This is useful if your party wants to focus only on incomplete quests. Defaults to `true`.
-
-#### Banned Scrolls (`BANNED_SCROLLS`)
-
-You can blacklist specific quests from being auto-invited by adding their names to the `BANNED_SCROLLS` array. Banned quests are never selected, regardless of their completion percentage.
-
-To ban a quest, uncomment (remove the `//` before) the quest name in the `BANNED_SCROLLS` list in the script settings. For example:
-
-```javascript
-BANNED_SCROLLS = [
-  "The Basi-List", // This quest is banned (no //)
-  // "The Feral Dust Bunnies", // This quest is NOT banned (has //)
-];
+```sh
+git clone <repository-url>
+cd automate-habitica-plus-plus
+npm install
+npm run setup
 ```
 
-#### Quest Selection And Invite Delay
+`npm run setup` prompts for the Habitica credentials, validates them, creates a Cloudflare KV namespace, deploys the Worker, atomically installs its secrets, and registers the Habitica webhooks. It stores credentials in ignored `.env`, deployment details in ignored `.wrangler.toml`, and creates ignored `config.local.ts` from the example. Setup keeps the real cron detached until the Worker, secrets, and application setup are stable, then attaches and deliberately recreates the configured schedule before finishing. Once the Worker finishes setup, it sends a Habitica private message as confirmation.
 
-The script always invites the quest with the **lowest [quest completion percentage](#quest-completion-percentage)** among your eligible scrolls. This helps your party work towards completing all quests together, prioritizing quests that fewer party members have finished.
+## Everyday commands
 
-The delay before the invite is sent depends on real contention for something more urgent, not on the selected quest's own completion percentage: `QUEST_INVITE_BASE_DELAY_MS` (10 seconds), plus `QUEST_INVITE_RIVAL_INCREMENT_MS` (15 seconds) for every other party member who owns an eligible scroll for a quest with a **lower** completion percentage than the one about to be invited.
+```sh
+npm run update    # fast-forward the repository and install changed dependencies
+npm run redeploy  # deploy code/config changes without resetting stored automation state
+npm run status    # show the last scheduled run and fail if it is stale
+npm run repair-cron # recreate a stale Cloudflare cron trigger
+npm run disable   # remove webhooks and delete the Worker; KV data is retained
+```
 
-- If nobody else in the party holds anything more urgent, the invite goes out almost immediately (10 seconds).
-- Each party member who does hold a more urgent scroll adds 15 seconds, giving their own automation (or the member themselves) a window to send that invite first.
-- If you have no eligible quest scrolls at all, the script waits as if every other party member were a rival before giving up (and, if `PM_WHEN_OUT_OF_QUEST_SCROLLS` is `true`, messaging you that you're out of scrolls).
+Each successful `npm run redeploy` also sends a Habitica private message from the new Worker as a deployment check.
 
-Since Habitica caps parties at 30 members, the delay can never exceed `10s + 15s × 29 ≈ 7.4 minutes`, even in the largest possible party.
+The Worker records every scheduled invocation and its cron expression before running automation. After the next scheduled time, `npm run status` reports the last invocation and exits with an error if it is stale or came from a different expression. If it is unhealthy, `npm run repair-cron` recreates the trigger immediately; run `npm run status` later to verify execution after Cloudflare propagation.
 
-The delay gives party members who hold a more urgent scroll a chance to send their own invite first, and prevents multiple party members from sending simultaneous quest invitations. Quests nobody else has anything more urgent for go out almost instantly, since there's no benefit to waiting.
+Run `npm run setup` again to reinitialize the Worker and webhooks. It reuses the existing KV namespace, but clears its automation state as part of initialization.
 
-<details>
-<summary>A note on fairness</summary>
+## Personal settings
 
----
+The versioned [defaults.ts](defaults.ts) contains the project defaults. Put only personal changes in the ignored `config.local.ts`; start from [config.local.example.ts](config.local.example.ts). For example:
 
-If you are worried about fairness in the quest invite process, consider that inviting quests in a fixed priority order rather than at random:
+```ts
+const overrides = {
+  AUTO_PURCHASE_GEMS: true,
+  BANNED_SCROLLS: ['The Basi-List'],
+}
 
-1. Habitica offers no achievements or benefits for being the party member who starts a quest. The person who sends the invite gains nothing over those who simply accept it.
-1. Random selection would spread scroll usage evenly across party members, but that is not actually a benefit: players who spend more scrolls still receive the full individual rewards from those quests.
-   Scrolls are simply traded for rewards, there is no benefit to hoarding them. In fact, priority selection allows players with lots of rare scrolls to use the party's help to convert them into rewards while sharing those rewards with the party.
-
-Priority selection systematically completes quests that fewer members have finished, maximizes reward distribution across the party, and ensures no scroll sits unused in anyone's inventory.
-
----
-
-</details>
-
-### Quest Report
-
-Sends yourself a [private message](https://habitica.fandom.com/wiki/Private_Messaging) every `QUEST_REPORT_FREQUENCY_DAYS` days (default `7`) listing the `QUEST_REPORT_COUNT` quests with the lowest [completion percentage](#quest-completion-percentage), a random sample of up to `MAX_SCROLL_OWNERS_DISPLAY` party members who own a scroll for each, and — if any `AUTO_INVITE_*` setting is enabled — which quest would currently be picked next by [Auto Invite Quests](#auto-invite-quests). Off by default; enable with `AUTO_QUEST_REPORT = true`.
-
-### Auto Cast Skills
-
-Strategically casts your [skills](https://habitica.fandom.com/wiki/Skills) for you, so [mana](https://habitica.fandom.com/wiki/Mana_Points) goes toward buffs and boss damage instead of sitting unused. In order from highest to lowest priority:
-
-1. Heals you and your [party](https://habitica.fandom.com/wiki/Party) as needed ([healer](https://habitica.fandom.com/wiki/Healer))
-2. Casts Stealth to hide you from any [missed dailies](https://habitica.fandom.com/wiki/Dailies#Uncompleted_Dailies) just before your [day start time](https://habitica.fandom.com/wiki/Custom_Day_Start) ([rogue](https://habitica.fandom.com/wiki/Rogue)), then spends any leftover mana on Backstab or Pickpocket if not yet high enough level for Tools of the Trade
-3. Freezes your [streaks](https://habitica.fandom.com/wiki/Streaks) with Chilling Frost just before your day start time ([mage](https://habitica.fandom.com/wiki/Mage))
-4. Defeats [bosses](https://habitica.fandom.com/wiki/Boss) with Burst of Flames (mage) or Brutal Smash ([warrior](https://habitica.fandom.com/wiki/Warrior)) just before your day start time, but only while your party is actually fighting one
-5. Buffs your [class](https://habitica.fandom.com/wiki/Class_System)'s primary [stat](https://habitica.fandom.com/wiki/Character_Stats) with your full mana pool right after [cron](https://habitica.fandom.com/wiki/Cron) — buffs reset at cron no matter how long they've been active, so casting them beforehand would waste almost all of their duration
-6. Buffs your class's primary stat whenever extra mana is available afterward (reserving mana for the items listed above); mages will also cast Ethereal Surge to restore party mana, since unlike buffs it isn't wiped at cron
-
-### Auto Pause/Resume Damage
-
-Automatically checks you into the [inn](https://habitica.fandom.com/wiki/Rest_in_the_Inn) if the current [boss](https://habitica.fandom.com/wiki/Boss) will do more than `MAX_PLAYER_DAMAGE` to you, or `MAX_PARTY_DAMAGE` to your [party](https://habitica.fandom.com/wiki/Party), or enough damage to [kill](https://habitica.fandom.com/wiki/Death_Mechanics) you or one of your party members. Checks you out of the inn otherwise.
-
-### Auto Allocate Stat Points
-
-Stat points are automatically allocated to your chosen [stat](https://habitica.fandom.com/wiki/Character_Stats).
-
-### Auto Purchase Gems
-
-Automatically purchases [gems](https://habitica.fandom.com/wiki/Gems) with [gold](https://habitica.fandom.com/wiki/Gold_Points) each month. You must [cron](https://habitica.fandom.com/wiki/Cron) at least once during a month in order to buy gems for that month.
-
-> [!IMPORTANT]
-> Only [subscribers](https://habitica.fandom.com/wiki/Subscription) can run this automation.
-
-### Auto Purchase Armoires
-
-Any [gold](https://habitica.fandom.com/wiki/Gold_Points) you earn over `RESERVE_GOLD` will automatically be spent on [enchanted armoires](https://habitica.fandom.com/wiki/Enchanted_Armoire).
-
-### Auto Sell Eggs/Hatching Potions/Food
-
-Automatically sells your extra [eggs](https://habitica.fandom.com/wiki/Eggs), [hatching potions](https://habitica.fandom.com/wiki/Hatching_Potions), and/or [food](https://habitica.fandom.com/wiki/Food).
-
-**Eggs and potions** are sold based on computed needs — the script calculates exactly how many of each egg species and potion color you need for all possible pet and mount combinations, counts what you've already consumed (inventory + hatched pets + mounts), and sells only the excess. No manual configuration required. Egg and potion types that are not part of any standard or quest pet combo (e.g., special event items) are never sold.
-
-**Food** uses a flat reserve: you configure how much to keep with `RESERVE_FOOD`. Saddles are never sold.
-
-### Auto Hatch/Feed Pets
-
-Automatically hatches and feeds [pets](https://habitica.fandom.com/wiki/Pets) to turn them into [mounts](https://habitica.fandom.com/wiki/Mounts). The behavior depends on the `HATCH_FEED_MODE` setting.
-
-If `ONLY_USE_DROP_FOOD` is set to `true`, the script will only feed basic foods (meat, milk, fish, etc.) to your pets. Special foods like cake, candy, pie, etc. will not be fed.
-
-#### Hatch/Feed Mode (`HATCH_FEED_MODE`)
-
-| Mode             | Description                                                                                                             |
-| ---------------- | ----------------------------------------------------------------------------------------------------------------------- |
-| `"conservative"` | Only hatches/feeds when you have enough resources for ALL unowned pets of that type. Never makes choices for you.       |
-| `"priority"`     | Hatches and feeds pets in a defined priority order, using available resources immediately. More aggressive progression. |
-
----
-
-#### Conservative Mode
-
-Automatically hatches pets, but only if:
-
-1. the player has enough [eggs](https://habitica.fandom.com/wiki/Eggs) for all unowned pets/mounts of that species, and
-2. the player has enough [hatching potions](https://habitica.fandom.com/wiki/Hatching_Potions) for all unowned pets/mounts of that color.
-
-Automatically feeds pets, but only if:
-
-1. the player has enough eggs for all unowned pets/mounts of that species, and
-2. the player has enough hatching potions for all unowned pets/mounts of that color, and
-3. the player has enough of the pet's [favorite food(s)](https://habitica.fandom.com/wiki/Food_Preferences) to obtain all unowned mounts with the same favorite food(s).
-
-In other words, the script will not choose which pets to hatch/feed for you; it will only hatch/feed pets if you have enough eggs/potions/food for ALL the unowned options! If a choice needs to be made, then the choice is left up to you.
-
-#### Priority Mode
-
-Hatches and feeds pets immediately using available resources, following a defined priority order. The priorities are designed to help players complete their collection of pets and mounts in a predictable way and also earn [pet and mount achievements](https://habitica.fandom.com/wiki/Achievements) as efficiently as possible.
-
-**Hatching Priority (in order):**
-
-1. **Standard pets (basic colors)**, also known as [generation 1 pets](https://habitica.fandom.com/wiki/Pets#Generation_1_Pets)
-2. **[Magic potion pets](https://habitica.fandom.com/wiki/Pets#Magic_Potion_Pets) and [Quest pets](https://habitica.fandom.com/wiki/Pets#Quest_Pets)**
-3. **[Wacky potion pets](https://habitica.fandom.com/wiki/Pets#Wacky_Potion_Pets)**
-
-Within each group, pets are hatched alphabetically by species name.
-
-> [!TIP] > **Why this order?** Standard pets of basic colors are prioritized because Habitica has achievements for collecting all standard pets and mounts of basic colors. Magic potion pets and quest pets share the same priority because they use different resources (eggs and potions), so they don't compete with each other for hatching.
-
-**Feeding Priority (in order):**
-
-1. **Standard pets (basic colors)**, also known as [generation 1 pets](https://habitica.fandom.com/wiki/Pets#Generation_1_Pets) - Fed with favorite foods only (+5 per feeding)
-2. **[Quest pets](https://habitica.fandom.com/wiki/Pets#Quest_Pets)** - Fed with favorite foods only (+5 per feeding)
-3. **[Magic potion pets](https://habitica.fandom.com/wiki/Pets#Magic_Potion_Pets)** - Fed with leftover food (+5 per feeding)
-4. **[Wacky potion pets](https://habitica.fandom.com/wiki/Pets#Wacky_Potion_Pets)** - Skipped (cannot become mounts)
-
-Within each group, pets closest to becoming mounts are fed first.
-
-> [!TIP] > **Why this order?** Basic color pets (standard and quest) have [favorite foods](https://habitica.fandom.com/wiki/Food_Preferences) that give +5 points per feeding, while magic potion pets get +5 points for any food item. By feeding basic color pets first, we ensure their specific food requirements are met before giving leftover food to magic potion pets, which can eat anything.
-
-**Feeding Efficiency:**
-
-- Basic color pets (Base, Red, Golden, etc.) are **only** fed with their favorite foods for maximum efficiency (+5 points per feeding instead of +2)
-- Magic potion pets (Royal Purple, Shimmer, etc.) are only fed with "leftover" food - food that is not needed by any remaining basic color pets
-- This ensures no food is wasted on inefficient feedings
-
-**Key Differences from Conservative Mode:**
-
-| Aspect   | Conservative                      | Priority                                          |
-| -------- | --------------------------------- | ------------------------------------------------- |
-| Hatching | Only when ALL resources available | Hatches immediately when any egg+potion available |
-| Feeding  | Only when enough food for ALL     | Feeds with available favorite foods               |
-| Choices  | Never makes choices for you       | Makes choices based on priority order             |
-| Progress | Slower, but no decisions needed   | Faster, follows defined priorities                |
-
-### Hide Notifications
-
-Hides [notifications](https://habitica.fandom.com/wiki/Notifications?so=search#Parties_and_Guilds) from groups ([party](https://habitica.fandom.com/wiki/Party) & [guilds](https://habitica.fandom.com/wiki/Guilds)) in the Habitica UI. The player can configure which groups they'd like to hide notifications from. To get the ID of a guild, visit the guild in a web browser and copy the end of the URL in your address bar (everything after the last `/`). Note that if you set `HIDE_PARTY_NOTIFICATIONS` or `HIDE_ALL_GUILD_NOTIFICATIONS` to `true`, it may take up to 10 mins for Automate Habitica to start hiding notifications from any new party/guilds you join.
-
-> [!TIP]
-> If you are in a party that buffs a lot, it is recommended that you turn `HIDE_PARTY_NOTIFICATIONS` off, because the script needs to make 2 API calls to hide each party notification. API calls take time, so if your party is buffing continuously, you may see party notifications appear & disappear rapidly. Also, the Habitica API only allows a certain number of API calls per minute (better to use those API calls for buffs if you have lots of mana!)
-
-> [!NOTE]
-> Due to [limitations with Google Apps Script](https://issuetracker.google.com/issues/231411987), Automate Habitica+ may take up to 2 mins to hide party notifications if `HIDE_PARTY_NOTIFICATIONS` is set to `true`.
-
----
-
-## Quest Completion Percentage
-
-The quest completion percentage is used by [Auto Invite Quests](#quest-selection-and-invite-delay) to determine which quests your party should focus on, and how soon to invite them.
-
-### How It's Calculated
-
-| Quest Type              | Goal per Member                        | What's Tracked                   |
-| ----------------------- | -------------------------------------- | -------------------------------- |
-| **Egg quests**          | 20 eggs (owned + used for pets/mounts) | Species-specific egg collection  |
-| **Magic potion quests** | 18 potions                             | Color-specific potion collection |
-| **Wacky potion quests** | 9 potions                              | Wacky potion collection          |
-| **Other quests**        | 1 completion                           | Quest achievement count          |
-
-**Formula:** `% = (sum of all members' progress) / (sum of all members' goals) × 100`
-
-### Example
-
-For a party of 4 members and an egg quest that rewards 2 eggs per completion:
-
-- Each member needs 20 eggs → 10 completions each
-- Party total goal: 4 × 10 = 40 completions
-- If members have collected 5, 8, 3, and 4 eggs respectively → 20 total
-- Completion: (20 / 40) × 100 = **50%**
-
-Quests with lower completion percentages are prioritized, helping your party work toward completing all quests together.
-
----
-
-## Before Installing
-
-It is highly recommended that you use a desktop computer for this, as some of the steps don't work well on mobile.
-
-> [!WARNING]
-> You must uninstall any scripts that do the same thing(s) as Automate Habitica. For example, if you are running the [Auto Accept Quests](https://habitica.fandom.com/wiki/Google_Apps_Script#Auto_Accept_Quests) script, you need to uninstall it, because Automate Habitica also auto accepts quest invites, and these two scripts will conflict with each other.
-
-To uninstall a script:
-
-1. Click [here](https://script.google.com/home) to see a list of your scripts. If you're not already signed into your Google account, click the "Start Scripting" button and sign in. Then click on "My Projects" in the main menu on the left.
-2. Click on the script you want to uninstall.
-3. Click the blue "Deploy" button near the top of the page, then click "Manage deployments".
-4. Click the "Archive" button (looks like a box with a down arrow inside), then click the "Done" button. If the script has no deployments, there will be no archive button, and you will see the message "This project has not been deployed yet". In this case, just click "Cancel".
-5. In the main menu on the left, click on "Triggers" (looks like an alarm clock).
-6. Hover your mouse over each trigger in the list, click the three dots on the right, and click "Delete trigger".
-7. If your script had no deployments, you can skip to the last step. If you clicked the "Archive" button, continue to the next step.
-8. Click [here](https://habitica.com/user/settings/api) to open your API Settings. Highlight and copy your User ID (it looks something like this: `c4de46a5-e9ba-4d8c-a28f-7f5a3d3d218b`).
-9. Click [here](https://robwhitaker.com/habitica-webhook-editor/) to open the Habitica Webhook Editor. Paste your User ID in the "User ID" box.
-10. On the same page where you copied your User ID, click the "Show API Token" button, and copy your API Token.
-11. In the Habitica Webhook Editor, paste your API Token in the "API Token" box, then click "Login".
-12. Click the "Delete" button next to every webhook that belongs to the script you are uninstalling. The webhook should have a large title that matches the name of the script.
-13. Repeat the above steps for every script you need to uninstall.
-
-## Setup Instructions
-
-It is highly recommended that you use a desktop computer for this, as some of the steps don't work well on mobile. Make sure you read the [Before Installing](#before-installing) section above, and follow the instructions there if applicable!
-
-> [!CAUTION]
-> Only install one copy of Automate Habitica per Google account, otherwise you will exceed the [limit for URL Fetch calls](https://developers.google.com/apps-script/guides/services/quotas) and the script will not work.
-
-### Which version should I copy?
-
-There are two Automate Habitica+ script projects to choose from:
-
-- **[Stable](https://script.google.com/d/14GDS_AQCgXyNK0-VEJlfhvIMI-h4GpnDnYm_3GNUxzOb-LG63NhhWtHi/edit?usp=sharing)** — matches the latest [GitHub release](https://github.com/douglasrizzo/automate-habitica/releases). Recommended for most users.
-- **[Dev](https://script.google.com/d/1sipdo-zWZ_rymPSIZFWBCgf-U-_zEEyQwHBB9IUeSHCxpPTJHqnCLOIl/edit?usp=sharing)** — matches the `main` branch on GitHub, updated more frequently. May include fixes and features not in a release yet, but has seen less real-world testing. If something breaks, you can always follow [Updating the Script](#updating-the-script) to switch back to Stable.
-
-The steps below use the Stable link; substitute the Dev link in step 1 if you'd rather use that version.
-
-1. Click [here](https://script.google.com/home/projects/14GDS_AQCgXyNK0-VEJlfhvIMI-h4GpnDnYm_3GNUxzOb-LG63NhhWtHi/) to go to the Automate Habitica script. If you're not signed into your Google account, click on "Start Scripting", then sign in, then click on the script link again.
-2. Click the "Make a copy" button (looks like two pages of paper).
-3. At the top of your screen, click on "Copy of Automate Habitica+". Rename it "Automate Habitica+" and click the "Rename" button.
-4. Click [here](https://habitica.com/user/settings/api) to open your API Settings. Highlight and copy your User ID (it looks something like this: `c4de46a5-e9ba-4d8c-a28f-7f5a3d3d218b`). In the Automate Habitica+ script, paste your User ID between the quotations where it says `const USER_ID = "";`. It should now look something like this: `const USER_ID = "c4de46a5-e9ba-4d8c-a28f-7f5a3d3d218b";`
-5. On the same page where you copied your User ID, click the "Show API Token" button, and copy your API Token. In the Automate Habitica+ script, paste your API Token between the quotations where it says `const API_TOKEN = "";`. It should now look something like this: `const API_TOKEN = "c4de46a5-e9ba-4d8c-a28f-7f5a3d3d218b";`
-6. Skip the line that says `const WEB_APP_URL = "";`. We will come back to that later. Edit all the other settings (`const`s) in the script to your liking. Only edit in between the `=` and the `;`. If there are quotations `""` in between the `=` and the `;`, just type in between the quotations.
-7. Click the "Save project" button near the top of the page (looks like a floppy disk).
-8. Click the blue "Deploy" button near the top of the page, then click "New deployment".
-
-> [!WARNING]
-> Before clicking "Deploy" in the dialog that opens, check the "Who has access" dropdown and make sure it's set to **`Anyone`** (not `Only myself`). Habitica's servers call your script from outside your Google account, so if this is left on `Only myself`, Habitica will silently fail to reach it — none of the webhook-driven automations (quest invites, quest completion, task-scored reactions, etc.) will work, even though everything else looks correctly installed.
-
-9. Click the "Deploy" button. (If this is your first time deploying) Click the "Review permissions" button and select your Google account. Click on "Advanced", then "Go to Automate Habitica+ (unsafe)", then click "Continue", then "Allow".
-
-> [!TIP]
-> The "(unsafe)" warning appears because Google hasn't verified this script. It's safe to proceed—the script only communicates with Habitica's API.
-
-10. Under "Web app", click the "Copy" button to copy the Web App URL. Then click the "Done" button.
-11. Paste your Web App URL inside the quotations where it says `const WEB_APP_URL = "";`.
-12. Click the drop-down menu to the right of the "Debug" button, near the top of the page. Select "install" from the drop-down.
-13. Click the "Run" button to the left of the "Debug" button. Wait for it to say "Execution completed".
-
-You're all done! If you need to change the settings or uninstall the script at some point, follow the steps below.
-
-## Changing the Settings
-
-It is highly recommended that you use a desktop computer for this, as some of the steps don't work well on mobile.
-
-1. [Click here](https://script.google.com/home) to see a list of your scripts. If you're not already signed into your Google account, click the "Start Scripting" button and sign in. Then click on "My Projects" in the main menu on the left.
-2. Click on "Automate Habitica+".
-3. Edit the settings (`const`s) to your liking.
-4. Click the "Save project" button near the top of the page (looks like a floppy disk).
-5. Click the blue "Deploy" button near the top of the page, then click "Manage deployments".
-6. Click the "Edit" button (looks like a pencil). Under "Version", select "New version".
-7. Click the "Deploy" button, then the "Done" button.
-8. Click the drop-down menu to the right of the "Debug" button, near the top of the page. Select "install" from the drop-down.
-9. Click the "Run" button to the left of the "Debug" button. Wait for it to say "Execution completed".
-
-## Uninstalling the Script
-
-It is highly recommended that you use a desktop computer for this, as some of the steps don't work well on mobile.
-
-1. [Click here](https://script.google.com/home) to see a list of your scripts. If you're not already signed into your Google account, click the "Start Scripting" button and sign in. Then click on "My Projects" in the main menu on the left.
-2. Click on "Automate Habitica+".
-3. Click the drop-down menu to the right of the "Debug" button, near the top of the page. Select "uninstall" from the drop-down.
-4. Click the "Run" button to the left of the "Debug" button. Wait for it to say "Execution completed".
-5. Click the blue "Deploy" button near the top of the page, then click "Manage deployments".
-6. Click the "Archive" button (looks like a box with a down arrow inside). Then click the "Done" button.
-
-## Updating the Script
-
-It is highly recommended that you use a desktop computer for this, as some of the steps don't work well on mobile.
-
-1. Follow the steps in [Uninstalling the Script](#uninstalling-the-script) above.
-2. Copy & paste your settings (`const`s) into a text editor so you can reference them while setting up the new version.
-3. In the main menu on the left, click on "Overview" (looks like a lowercase letter i inside a circle).
-4. Click the "Remove project" button (looks like a trash can).
-5. Follow the [Setup Instructions](#setup-instructions) above.
-
-## Contact
-
-### Automate Habitica+ (this fork)
-
-🐞 Report a bug: [https://github.com/douglasrizzo/automate-habitica/issues](https://github.com/douglasrizzo/automate-habitica/issues)
-
-### Original Automate Habitica
-
-❔ Questions: [https://github.com/bumbleshoot/automate-habitica/discussions/categories/q-a](https://github.com/bumbleshoot/automate-habitica/discussions/categories/q-a)  
-💡 Suggestions: [https://github.com/bumbleshoot/automate-habitica/discussions/categories/suggestions](https://github.com/bumbleshoot/automate-habitica/discussions/categories/suggestions)  
-🐞 Report a bug: [https://github.com/bumbleshoot/automate-habitica/issues](https://github.com/bumbleshoot/automate-habitica/issues)  
-💗 Donate to @bumbleshoot: [https://github.com/sponsors/bumbleshoot](https://github.com/sponsors/bumbleshoot)
+export default overrides
+```

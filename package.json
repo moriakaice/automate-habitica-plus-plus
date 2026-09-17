@@ -1,0 +1,32 @@
+{
+  "name": "automate-habitica",
+  "version": "1.0.0",
+  "private": true,
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "wrangler dev --config .wrangler.toml",
+    "setup": "tsx scripts/manage.ts setup",
+    "update": "git pull --ff-only && npm install",
+    "redeploy": "tsx scripts/manage.ts redeploy",
+    "status": "tsx scripts/manage.ts status",
+    "repair-cron": "tsx scripts/manage.ts repair-cron",
+    "disable": "tsx scripts/manage.ts disable",
+    "list-locks": "wrangler kv key get __lock__ --binding KV --remote --config .wrangler.toml",
+    "unlock": "wrangler kv key delete __lock__ --binding KV --remote --config .wrangler.toml",
+    "deploy": "wrangler deploy --config .wrangler.toml",
+    "type-check": "tsc --noEmit",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260813.1",
+    "@types/node": "^22.20.3",
+    "dotenv-cli": "^11.0.0",
+    "prettier": "^3.9.6",
+    "tsx": "^4.23.12",
+    "typescript": "^7.0.2",
+    "wrangler": "^4.123.0"
+  }
+}

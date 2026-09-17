@@ -1,0 +1,20 @@
+name = "automate-habitica"
+main = "worker.ts"
+compatibility_date = "2026-09-15"
+
+# Cron trigger: runs processTrigger() every 10 minutes
+[triggers]
+crons = ["*/10 * * * *"]
+
+# The setup command adds the KV namespace binding to this generated configuration.
+
+# ─────────────────────────────────────────────────────────────────
+# Secrets – set via CLI (never hardcode credentials here):
+#   wrangler secret put USER_ID
+#   wrangler secret put API_TOKEN
+#   wrangler secret put WORKER_URL   <- your deployed worker URL
+# ─────────────────────────────────────────────────────────────────
+
+[observability.logs]
+enabled = true
+invocation_logs = true
