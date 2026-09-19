@@ -438,12 +438,14 @@ async function processQueue(ctx: AppCtx, isWebhook: boolean, transientQueue: Que
       let durableQueueChanged = false
       let processedDurableWork = false
       const complete = <K extends keyof QueueState>(key: K): void => {
+        const wasDurable = durableQueue[key] !== undefined
         delete transientQueue[key]
-        if (durableQueue[key] !== undefined) {
+        if (wasDurable) {
           delete durableQueue[key]
           durableQueueChanged = true
           processedDurableWork = true
         }
+        console.log(`Queue completed: ${String(key)}${wasDurable ? ' (durable)' : ''}`)
       }
 
       // High-priority: mark as "pending" before processing so a concurrent
@@ -455,6 +457,7 @@ async function processQueue(ctx: AppCtx, isWebhook: boolean, transientQueue: Que
         if (fresh.hideAllNotifications === 'pending') delete fresh.hideAllNotifications
         // If it was re-set to `true` by a concurrent webhook, the loop will pick it up.
         await writeQueue(ctx.env.KV, fresh)
+        console.log('Queue completed: hideAllNotifications (durable)')
         continue
       }
 
