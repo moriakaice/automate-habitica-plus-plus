@@ -12,7 +12,7 @@ import {
   RESOURCES_PER_WACKY,
   SERVER_RETRY_DELAY_MS,
 } from './constants.js'
-import { setKVState } from './state.js'
+import { getKVState, setKVState } from './state.js'
 
 export const HABITICA_CLIENT_ID = '7658e840-f2e1-42d5-8b8b-1d8ad65fd517-AutomateHabitica++'
 
@@ -121,7 +121,7 @@ export async function getUser(ctx: AppCtx, force = false): Promise<HabiticaUser>
     if (ctx.user === undefined) throw new Error('Failed to fetch user after 3 attempts')
 
     // persist party ID for webhook comparisons
-    if (ctx.user.party._id) {
+    if (ctx.user.party._id && (await getKVState(ctx, 'PARTY_ID')) !== ctx.user.party._id) {
       await setKVState(ctx, 'PARTY_ID', ctx.user.party._id)
     }
   }

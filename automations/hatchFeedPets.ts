@@ -278,7 +278,6 @@ export async function hatchFeedPetsPriority(ctx: AppCtx): Promise<void> {
       if ((foodOwned[food] ?? 0) <= 0) delete foodOwned[food]
       hunger -= feedings * FOOD_POINTS_FAVORITE
     }
-
     if (hunger <= 0) {
       await tryHatchReplacement(species, color, eggsOwned, potionsOwned, ctx)
     }

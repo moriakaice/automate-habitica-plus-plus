@@ -189,8 +189,8 @@ async function handleTrigger(env: Env, cron: string): Promise<void> {
     await setKVState(ctx, 'LAST_SCHEDULED_CRON', cron)
     await flushState(ctx)
     await reenableWebhooks(ctx)
-    await processTrigger(ctx)
-    await processQueue(ctx, false)
+    const scheduledQueue = await processTrigger(ctx)
+    await processQueue(ctx, false, scheduledQueue)
     await runScheduledQuestInviteIfDue(ctx)
     await flushState(ctx)
     if (env.HEALTHCHECK_URL) {
@@ -260,7 +260,7 @@ async function handleWebhookAsync(postData: Record<string, unknown>, env: Env): 
 
 // ─── Process trigger ───────────────────────────────────────────────────────────
 
-async function processTrigger(ctx: AppCtx): Promise<void> {
+async function processTrigger(ctx: AppCtx): Promise<QueueState> {
   const now = new Date()
   const user = await getUser(ctx)
   const prefs = user.preferences
@@ -273,20 +273,13 @@ async function processTrigger(ctx: AppCtx): Promise<void> {
   const lastAfterCronRaw = await getKVState(ctx, 'LAST_AFTER_CRON')
   const lastAfterCron = new Date(lastAfterCronRaw ?? 0)
 
-  // Read the queue JSON once, update fields in-memory, write once at the end.
-  // This collapses up to N individual puts into a single KV write.
-  const q = await readQueue(ctx.env.KV)
-  const queued: string[] = []
+  // Scheduled work is recomputed from fresh Habitica state every run, so it
+  // stays in memory instead of consuming a KV write for each completed task.
+  const q: QueueState = {}
 
-  /** Sets a queue flag only if not already pending; always overwrites data-carrying values. */
+  /** Sets a transient queue flag for this scheduled invocation. */
   const set = <K extends keyof QueueState>(key: K, val: QueueState[K]): void => {
-    if (q[key] === undefined) {
-      q[key] = val
-      queued.push(String(key))
-    } else if (val !== true) {
-      // Data-carrying field (gold amount, quest key, etc.): always use the latest value.
-      q[key] = val
-    }
+    q[key] = val
   }
 
   // Just before day start (skill dump before cron)
@@ -328,10 +321,8 @@ async function processTrigger(ctx: AppCtx): Promise<void> {
   if (AUTO_QUEST_REPORT) set('sendQuestReport', true)
   if (AUTO_PURCHASE_ARMOIRES) set('purchaseArmoires', true)
   if (AUTO_HEAL) set('healPlayer', true)
-  if (queued.length > 0) {
-    await writeQueue(ctx.env.KV, q)
-    console.log(`Trigger queued: ${queued.join(', ')}`)
-  }
+  console.log(`Trigger selected: ${Object.keys(q).join(', ')}`)
+  return q
 }
 
 // ─── Process webhook ───────────────────────────────────────────────────────────
@@ -433,7 +424,7 @@ async function processWebhook(webhookData: WebhookData, ctx: AppCtx, logType = f
 
 // ─── Process queue ─────────────────────────────────────────────────────────────
 
-async function processQueue(ctx: AppCtx, isWebhook: boolean): Promise<void> {
+async function processQueue(ctx: AppCtx, isWebhook: boolean, transientQueue: QueueState = {}): Promise<void> {
   const acquired = await tryAcquireLock(ctx.env.KV)
   if (!acquired) {
     console.log('Could not acquire lock – another invocation is running')
@@ -442,12 +433,23 @@ async function processQueue(ctx: AppCtx, isWebhook: boolean): Promise<void> {
 
   try {
     while (true) {
-      const q = await readQueue(ctx.env.KV)
+      const durableQueue = await readQueue(ctx.env.KV)
+      const q: QueueState = { ...transientQueue, ...durableQueue }
+      let durableQueueChanged = false
+      let processedDurableWork = false
+      const complete = <K extends keyof QueueState>(key: K): void => {
+        delete transientQueue[key]
+        if (durableQueue[key] !== undefined) {
+          delete durableQueue[key]
+          durableQueueChanged = true
+          processedDurableWork = true
+        }
+      }
 
       // High-priority: mark as "pending" before processing so a concurrent
       // webhook can detect if it was re-triggered while we were working.
-      if (q.hideAllNotifications === true) {
-        await writeQueue(ctx.env.KV, { ...q, hideAllNotifications: 'pending' })
+      if (durableQueue.hideAllNotifications === true) {
+        await writeQueue(ctx.env.KV, { ...durableQueue, hideAllNotifications: 'pending' })
         await hideAllNotifications(ctx)
         const fresh = await readQueue(ctx.env.KV)
         if (fresh.hideAllNotifications === 'pending') delete fresh.hideAllNotifications
@@ -456,115 +458,116 @@ async function processQueue(ctx: AppCtx, isWebhook: boolean): Promise<void> {
         continue
       }
 
-      // Process all remaining items in one pass; write the updated queue once.
-      let anyProcessed = false
+      // Drain essential work first, then checkpoint one completed bulk task per loop.
+      // Continuing the loop lets bulk work run until it completes or Workers stops it.
+      let processed = false
 
       if (q.allocateStatPoints !== undefined) {
         await allocateStatPoints(ctx)
-        delete q.allocateStatPoints
-        anyProcessed = true
+        complete('allocateStatPoints')
+        processed = true
       }
       if (q.pauseResumeDamage !== undefined) {
         await pauseResumeDamage(ctx)
-        delete q.pauseResumeDamage
-        anyProcessed = true
+        complete('pauseResumeDamage')
+        processed = true
+      }
+      if (q.healPlayer !== undefined && !isWebhook) {
+        await healPlayer(ctx)
+        complete('healPlayer')
+        processed = true
       }
       if (q.acceptQuestInvite !== undefined) {
         await acceptQuestInvite(ctx)
-        delete q.acceptQuestInvite
-        anyProcessed = true
+        complete('acceptQuestInvite')
+        processed = true
       }
       if (q.healParty !== undefined) {
         await healParty(ctx)
-        delete q.healParty
-        anyProcessed = true
+        complete('healParty')
+        processed = true
       }
       if (q.runCron !== undefined) {
         await runCron(ctx)
-        delete q.runCron
-        anyProcessed = true
+        complete('runCron')
+        processed = true
       }
       if (!isWebhook && q.beforeCronSkills !== undefined) {
         await beforeCronSkills(ctx)
-        delete q.beforeCronSkills
-        anyProcessed = true
+        complete('beforeCronSkills')
+        processed = true
       }
       if (!isWebhook && q.afterCronSkills !== undefined) {
         await afterCronSkills(ctx)
-        delete q.afterCronSkills
-        anyProcessed = true
+        complete('afterCronSkills')
+        processed = true
       }
       if (q.purchaseGems !== undefined) {
         await purchaseGems(ctx)
-        delete q.purchaseGems
-        anyProcessed = true
+        complete('purchaseGems')
+        processed = true
       }
       if (q.forceStartQuest !== undefined) {
         await forceStartQuest(ctx)
-        delete q.forceStartQuest
-        anyProcessed = true
+        complete('forceStartQuest')
+        processed = true
       }
+
       if (!isWebhook && q.useExcessMana !== undefined) {
         await useExcessMana(ctx)
-        delete q.useExcessMana
-        anyProcessed = true
-      }
-      if (!isWebhook && q.sellExtraFood !== undefined) {
+        complete('useExcessMana')
+        processed = true
+      } else if (!isWebhook && q.sellExtraFood !== undefined) {
         await sellExtraFood(ctx)
-        delete q.sellExtraFood
-        anyProcessed = true
-      }
-      if (!isWebhook && q.sellExtraHatchingPotions !== undefined) {
+        complete('sellExtraFood')
+        processed = true
+      } else if (!isWebhook && q.sellExtraHatchingPotions !== undefined) {
         await sellExtraHatchingPotions(ctx)
-        delete q.sellExtraHatchingPotions
-        anyProcessed = true
-      }
-      if (!isWebhook && q.sellExtraEggs !== undefined) {
+        complete('sellExtraHatchingPotions')
+        processed = true
+      } else if (!isWebhook && q.sellExtraEggs !== undefined) {
         await sellExtraEggs(ctx)
-        delete q.sellExtraEggs
-        anyProcessed = true
-      }
-      if (!isWebhook && q.hatchFeedPets !== undefined) {
+        complete('sellExtraEggs')
+        processed = true
+      } else if (!isWebhook && q.hatchFeedPets !== undefined) {
         if (HATCH_FEED_MODE === 'priority') {
           await hatchFeedPetsPriority(ctx)
         } else {
           await hatchFeedPets(ctx)
         }
-        delete q.hatchFeedPets
-        anyProcessed = true
-      }
-      if (!isWebhook && q.healPlayer !== undefined) {
-        await healPlayer(ctx)
-        delete q.healPlayer
-        anyProcessed = true
-      }
-      if (!isWebhook && q.purchaseArmoires !== undefined) {
+        complete('hatchFeedPets')
+        processed = true
+      } else if (!isWebhook && q.purchaseArmoires !== undefined) {
         await purchaseArmoires(ctx)
-        delete q.purchaseArmoires
-        anyProcessed = true
-      }
-      if (!isWebhook && q.sendQuestReport !== undefined) {
+        complete('purchaseArmoires')
+        processed = true
+      } else if (!isWebhook && q.sendQuestReport !== undefined) {
         await sendQuestReport(ctx)
-        delete q.sendQuestReport
-        anyProcessed = true
+        complete('sendQuestReport')
+        processed = true
       }
 
-      if (anyProcessed) {
-        // Merge any queue items enqueued by automations during this pass
-        // (e.g. pauseResumeDamage from castSkills, purchaseArmoires from sellExtraItems).
+      if (processed) {
+        // Follow-up work shares this invocation's transient queue. A durable
+        // webhook item is acknowledged only after its automation returns.
         for (const [k, v] of Object.entries(ctx.queueBuffer) as [keyof QueueState, QueueState[keyof QueueState]][]) {
-          if (q[k] === undefined) {
+          if (transientQueue[k] === undefined) {
             // @ts-expect-error – dynamic key assignment over a discriminated-union type
-            q[k] = v
+            transientQueue[k] = v
           } else if (v !== true) {
             // @ts-expect-error
-            q[k] = v
+            transientQueue[k] = v
+          }
+          if (processedDurableWork) {
+            // @ts-expect-error – dynamic key assignment over a discriminated-union type
+            durableQueue[k] = v
+            durableQueueChanged = true
           }
         }
         ctx.queueBuffer = {}
 
-        await writeQueue(ctx.env.KV, q)
-        continue // re-read to pick up any items added by concurrent webhooks
+        if (durableQueueChanged) await writeQueue(ctx.env.KV, durableQueue)
+        continue // Re-read to pick up queue items added by concurrent webhooks.
       }
 
       break
@@ -763,7 +766,7 @@ async function runSetup(env: Env): Promise<void> {
   const user = await getUser(ctx, true)
 
   // Seed queue with initial state
-  await processTrigger(ctx)
+  const scheduledQueue = await processTrigger(ctx)
   await processWebhook({ webhookType: 'scored', taskType: 'daily', isDue: true, gp: user.stats.gp, dropType: 'All' }, ctx)
   await processWebhook({ webhookType: 'leveledUp', statPoints: user.stats.points, lvl: user.stats.lvl }, ctx)
   await processWebhook({ webhookType: 'questInvited', questKey: user.party.quest.key }, ctx)
@@ -775,7 +778,7 @@ async function runSetup(env: Env): Promise<void> {
   await processWebhook({ webhookType: 'groupChatReceived' }, ctx)
 
   await createWebhooks(ctx)
-  await processQueue(ctx, false)
+  await processQueue(ctx, false, scheduledQueue)
   await flushState(ctx)
 
   await sendPrivateMessage(ctx, `${PROJECT_NAME} setup complete. Your Cloudflare Worker is connected and running.`)
