@@ -12,7 +12,7 @@ This file provides guidance to AI agents when working with code in this reposito
 
 `worker.ts` exports the two Cloudflare Workers entry points:
 
-- **`scheduled()`** — runs every 10 minutes (configured in `.wrangler.toml`). Calls `handleTrigger()`, which mirrors GAS's `onTrigger()`.
+- **`scheduled()`** — runs every X minutes (configured in `.wrangler.toml`). Calls `handleTrigger()`, which mirrors GAS's `onTrigger()`.
 - **`fetch()`** — handles Habitica webhook POSTs (mirrors GAS's `doPost()`) and authenticated admin GET endpoints. Each admin route requires `?token=<API_TOKEN>`:
   - `/setup` removes this Worker's existing webhooks, clears queue/application state, seeds and processes initial automation work, creates the required webhooks, and sends a Habitica confirmation PM.
   - `/uninstall` removes only this Worker's Habitica webhooks.

@@ -3,7 +3,7 @@
  *
  * Entry points:
  *   fetch()     – handles Habitica webhook POSTs and admin endpoints
- *   scheduled() – runs every 10 minutes (configured in .wrangler.toml)
+ *   scheduled() – runs every X minutes (configured in .wrangler.toml)
  *
  * Admin endpoints (GET):
  *   /setup      – create Habitica webhooks, validate credentials, seed queue
@@ -173,7 +173,7 @@ export default {
   },
 
   /**
-   * Cron trigger – runs every 10 minutes (configured in .wrangler.toml).
+   * Cron trigger – runs every X minutes (configured in .wrangler.toml).
    */
   async scheduled(event: ScheduledEvent, env: Env, _executionCtx: ExecutionContext): Promise<void> {
     await handleTrigger(env, event.cron)

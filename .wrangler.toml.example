@@ -2,9 +2,9 @@ name = "automate-habitica"
 main = "worker.ts"
 compatibility_date = "2026-09-15"
 
-# Cron trigger: runs processTrigger() every 10 minutes
+# Cron trigger: runs processTrigger() every X minutes - 6 is default
 [triggers]
-crons = ["*/10 * * * *"]
+crons = ["*/6 * * * *"]
 
 # The setup command adds the KV namespace binding to this generated configuration.
 
