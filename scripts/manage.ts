@@ -18,19 +18,25 @@ function runWrangler(args: string[], options: { input?: string; capture?: boolea
 
 function readEnv(): Record<string, string> {
   if (!existsSync(envFile)) return {}
-  return Object.fromEntries(
-    readFileSync(envFile, 'utf8')
-      .split('\n')
-      .flatMap((line) => {
-        const match = /^(USER_ID|API_TOKEN|WORKER_URL)=(.*)$/.exec(line)
-        if (!match) return []
-        const value = match[2].trim()
-        if (!value.startsWith('"')) return [[match[1], value]]
-        const parsed: unknown = JSON.parse(value)
-        if (typeof parsed !== 'string') throw new Error(`Invalid ${match[1]} value in ${envFile}.`)
-        return [[match[1], parsed]]
-      }),
-  )
+  const values: Record<string, string> = {}
+  for (const line of readFileSync(envFile, 'utf8').split('\n')) {
+    const separator = line.indexOf('=')
+    if (separator === -1) continue
+    const key = line
+      .slice(0, separator)
+      .trim()
+      .replace(/^\uFEFF/, '')
+    if (key !== 'USER_ID' && key !== 'API_TOKEN' && key !== 'WORKER_URL') continue
+    const value = line.slice(separator + 1).trim()
+    if (!value.startsWith('"')) {
+      values[key] = value
+      continue
+    }
+    const parsed: unknown = JSON.parse(value)
+    if (typeof parsed !== 'string') throw new Error(`Invalid ${key} value in ${envFile}.`)
+    values[key] = parsed
+  }
+  return values
 }
 
 function writeEnv(values: Record<string, string>): void {
